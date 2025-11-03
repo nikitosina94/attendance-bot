@@ -1,15 +1,18 @@
 import os
 import sqlite3
-import sys
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def init_admin():
-    # Создаем папку для данных
-    os.makedirs('/data', exist_ok=True)
+    DB_PATH = os.path.join(os.getcwd(), 'data', 'attendance.db')
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     
-    conn = sqlite3.connect('/data/attendance.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Создаем таблицы если их нет
+    # Создаем таблицы
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS admins (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -18,17 +21,17 @@ def init_admin():
         )
     ''')
     
-    # Добавляем администратора из переменной окружения
+    # Добавляем администратора
     admin_id = os.environ.get('ADMIN_ID')
     if admin_id:
         try:
             cursor.execute('INSERT OR IGNORE INTO admins (user_id) VALUES (?)', (int(admin_id),))
             conn.commit()
-            print(f"✅ Администратор {admin_id} добавлен!")
+            logger.info(f"✅ Администратор {admin_id} добавлен в базу!")
         except ValueError:
-            print("❌ ADMIN_ID должен быть числом")
+            logger.error("❌ ADMIN_ID должен быть числом")
     else:
-        print("ℹ️ ADMIN_ID не установлен")
+        logger.warning("ℹ️ ADMIN_ID не установлен")
     
     conn.close()
 
