@@ -5,8 +5,3 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
-    envVars:
-      - key: BOT_TOKEN
-        value: your_bot_token_here
-      - key: ADMIN_ID
-        value: your_telegram_id_here
