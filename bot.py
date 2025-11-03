@@ -19,9 +19,15 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 # Состояния для ConversationHandler
 WAITING_FOR_NAME, WAITING_FOR_POSITION = range(2)
 
+# Путь к базе данных
+DB_PATH = os.path.join(os.getcwd(), 'data', 'attendance.db')
+
 # Инициализация базы данных
 def init_db():
-    conn = sqlite3.connect('/data/attendance.db')
+    # Создаем папку data если её нет
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     # Таблица сотрудников
@@ -59,10 +65,11 @@ def init_db():
     
     conn.commit()
     conn.close()
+    logger.info("База данных инициализирована")
 
 # Проверка прав администратора
 def is_admin(user_id):
-    conn = sqlite3.connect('/data/attendance.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM admins WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
@@ -71,7 +78,7 @@ def is_admin(user_id):
 
 # Автоматическая регистрация пользователя Telegram как сотрудника
 def register_telegram_user(user_id, username, full_name):
-    conn = sqlite3.connect('/data/attendance.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute('SELECT * FROM employees WHERE telegram_id = ?', (user_id,))
@@ -82,6 +89,7 @@ def register_telegram_user(user_id, username, full_name):
             INSERT INTO employees (full_name, position, telegram_id) 
             VALUES (?, ?, ?)
         ''', (full_name, "Сотрудник", user_id))
+        logger.info(f"Зарегистрирован новый сотрудник: {full_name} (ID: {user_id})")
     
     conn.commit()
     conn.close()
@@ -143,9 +151,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data['waiting_for_telegram_id'] = True
     elif data == "add_employee_without_telegram":
-        await query.edit_message_text(
-            "Введите ФИО сотрудника:"
-        )
+        await query.edit_message_text("Введите ФИО сотрудника:")
         return WAITING_FOR_NAME
     elif data == "view_employees":
         await view_employees(query, context)
@@ -164,8 +170,7 @@ async def add_employee_menu(query, context):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(
-        "👥 Добавление сотрудника:\n"
-        "Выберите тип добавления:",
+        "👥 Добавление сотрудника:\nВыберите тип добавления:",
         reply_markup=reply_markup
     )
 
@@ -174,7 +179,7 @@ async def check_in(query, context):
     user_id = query.from_user.id
     today = date.today().isoformat()
     
-    conn = sqlite3.connect('/data/attendance.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute('SELECT id FROM employees WHERE telegram_id = ?', (user_id,))
@@ -187,32 +192,27 @@ async def check_in(query, context):
     
     employee_id = employee[0]
     
-    cursor.execute('''
-        SELECT * FROM attendance 
-        WHERE employee_id = ? AND check_date = ?
-    ''', (employee_id, today))
+    cursor.execute('SELECT * FROM attendance WHERE employee_id = ? AND check_date = ?', (employee_id, today))
     
     if cursor.fetchone():
         await query.edit_message_text("✅ Вы уже отметили свое присутствие сегодня!")
     else:
-        cursor.execute('''
-            INSERT INTO attendance (employee_id, check_date) 
-            VALUES (?, ?)
-        ''', (employee_id, today))
+        cursor.execute('INSERT INTO attendance (employee_id, check_date) VALUES (?, ?)', (employee_id, today))
         conn.commit()
         await query.edit_message_text("✅ Присутствие успешно отмечено!")
+        logger.info(f"Сотрудник {employee_id} отметил присутствие")
     
     conn.close()
 
 # Просмотр личного отчета
 async def my_report(query, context):
     user_id = query.from_user.id
-    conn = sqlite3.connect('/data/attendance.db')
+    conn = sqlite3.connect(DB_PATH)
     
-    employee_info = pd.read_sql_query('''
-        SELECT id, full_name, position, registered_date 
-        FROM employees WHERE telegram_id = ?
-    ''', conn, params=(user_id,))
+    employee_info = pd.read_sql_query(
+        'SELECT id, full_name, position, registered_date FROM employees WHERE telegram_id = ?', 
+        conn, params=(user_id,)
+    )
     
     if employee_info.empty:
         await query.edit_message_text("❌ Вы не зарегистрированы как сотрудник!")
@@ -221,13 +221,10 @@ async def my_report(query, context):
     
     employee_id = employee_info.iloc[0]['id']
     
-    attendance_data = pd.read_sql_query('''
-        SELECT check_date, check_time 
-        FROM attendance 
-        WHERE employee_id = ? 
-        ORDER BY check_date DESC 
-        LIMIT 30
-    ''', conn, params=(employee_id,))
+    attendance_data = pd.read_sql_query(
+        'SELECT check_date, check_time FROM attendance WHERE employee_id = ? ORDER BY check_date DESC LIMIT 30', 
+        conn, params=(employee_id,)
+    )
     
     conn.close()
     
@@ -235,11 +232,7 @@ async def my_report(query, context):
     position = employee_info.iloc[0]['position'] or "Не указана"
     registered_date = employee_info.iloc[0]['registered_date']
     
-    report_text = f"📊 Отчет по сотруднику:\n\n"
-    report_text += f"👤 Имя: {full_name}\n"
-    report_text += f"💼 Должность: {position}\n"
-    report_text += f"📅 Зарегистрирован: {registered_date[:10]}\n\n"
-    report_text += f"📈 Последние отметки ({len(attendance_data)}):\n"
+    report_text = f"📊 Отчет по сотруднику:\n\n👤 Имя: {full_name}\n💼 Должность: {position}\n📅 Зарегистрирован: {registered_date[:10]}\n\n📈 Последние отметки ({len(attendance_data)}):\n"
     
     for _, row in attendance_data.iterrows():
         report_text += f"✅ {row['check_date']}\n"
@@ -258,20 +251,15 @@ async def manage_employees(query, context):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(
-        "👥 Управление сотрудниками:\n"
-        "Выберите действие:",
-        reply_markup=reply_markup
-    )
+    await query.edit_message_text("👥 Управление сотрудниками:\nВыберите действие:", reply_markup=reply_markup)
 
 # Просмотр списка сотрудников
 async def view_employees(query, context):
-    conn = sqlite3.connect('/data/attendance.db')
-    employees = pd.read_sql_query('''
-        SELECT id, full_name, position, telegram_id, is_active, registered_date 
-        FROM employees 
-        ORDER BY is_active DESC, full_name
-    ''', conn)
+    conn = sqlite3.connect(DB_PATH)
+    employees = pd.read_sql_query(
+        'SELECT id, full_name, position, telegram_id, is_active, registered_date FROM employees ORDER BY is_active DESC, full_name', 
+        conn
+    )
     conn.close()
     
     if employees.empty:
@@ -281,11 +269,7 @@ async def view_employees(query, context):
         for _, emp in employees.iterrows():
             status = "✅" if emp['is_active'] else "❌"
             telegram_info = f"📱 ID: {emp['telegram_id']}" if emp['telegram_id'] else "👤 Без Telegram"
-            text += f"{status} {emp['full_name']}\n"
-            text += f"   💼 {emp['position'] or 'Не указана'}\n"
-            text += f"   {telegram_info}\n"
-            text += f"   📅 {emp['registered_date'][:10]}\n"
-            text += f"   ID в системе: {emp['id']}\n\n"
+            text += f"{status} {emp['full_name']}\n💼 {emp['position'] or 'Не указана'}\n{telegram_info}\n📅 {emp['registered_date'][:10]}\nID в системе: {emp['id']}\n\n"
     
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="manage_employees")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -296,36 +280,20 @@ async def view_employees(query, context):
 async def receive_employee_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     employee_name = update.message.text
     context.user_data['new_employee_name'] = employee_name
-    
-    await update.message.reply_text(
-        f"Отлично! Сотрудник: {employee_name}\n"
-        "Теперь введите должность сотрудника:"
-    )
-    
+    await update.message.reply_text(f"Отлично! Сотрудник: {employee_name}\nТеперь введите должность сотрудника:")
     return WAITING_FOR_POSITION
 
 async def receive_employee_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
     position = update.message.text
     employee_name = context.user_data['new_employee_name']
     
-    conn = sqlite3.connect('/data/attendance.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
-    cursor.execute('''
-        INSERT INTO employees (full_name, position) 
-        VALUES (?, ?)
-    ''', (employee_name, position))
-    
+    cursor.execute('INSERT INTO employees (full_name, position) VALUES (?, ?)', (employee_name, position))
     conn.commit()
     conn.close()
     
-    await update.message.reply_text(
-        f"✅ Сотрудник успешно добавлен!\n"
-        f"👤 Имя: {employee_name}\n"
-        f"💼 Должность: {position}\n"
-        f"📝 Тип: Без привязки к Telegram"
-    )
-    
+    await update.message.reply_text(f"✅ Сотрудник успешно добавлен!\n👤 Имя: {employee_name}\n💼 Должность: {position}\n📝 Тип: Без привязки к Telegram")
     context.user_data.pop('new_employee_name', None)
     return ConversationHandler.END
 
@@ -341,29 +309,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('waiting_for_telegram_id') and is_admin(user_id):
         try:
             telegram_id = int(update.message.text)
-            
-            conn = sqlite3.connect('/data/attendance.db')
+            conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             
             cursor.execute('SELECT * FROM employees WHERE telegram_id = ?', (telegram_id,))
             if cursor.fetchone():
                 await update.message.reply_text("❌ Этот сотрудник уже добавлен!")
             else:
-                cursor.execute('''
-                    INSERT INTO employees (full_name, position, telegram_id) 
-                    VALUES (?, ?, ?)
-                ''', (f"Сотрудник {telegram_id}", "Сотрудник", telegram_id))
+                cursor.execute('INSERT INTO employees (full_name, position, telegram_id) VALUES (?, ?, ?)', (f"Сотрудник {telegram_id}", "Сотрудник", telegram_id))
                 conn.commit()
-                await update.message.reply_text(
-                    f"✅ Сотрудник с Telegram ID {telegram_id} успешно добавлен!"
-                )
+                await update.message.reply_text(f"✅ Сотрудник с Telegram ID {telegram_id} успешно добавлен!")
+                logger.info(f"Добавлен сотрудник с Telegram ID: {telegram_id}")
             
             conn.close()
             context.user_data['waiting_for_telegram_id'] = False
             
         except ValueError:
             await update.message.reply_text("❌ Пожалуйста, введите корректный ID (только цифры)")
-    
     else:
         await update.message.reply_text("Используйте кнопки меню для навигации")
 
@@ -375,19 +337,12 @@ async def export_report(query, context):
         await query.edit_message_text("❌ У вас нет прав для этого действия")
         return
         
-    conn = sqlite3.connect('/data/attendance.db')
+    conn = sqlite3.connect(DB_PATH)
     
     try:
         report_data = pd.read_sql_query('''
-            SELECT 
-                e.full_name,
-                e.position,
-                e.telegram_id,
-                a.check_date,
-                a.check_time,
-                a.status
-            FROM attendance a
-            JOIN employees e ON a.employee_id = e.id
+            SELECT e.full_name, e.position, e.telegram_id, a.check_date, a.check_time, a.status
+            FROM attendance a JOIN employees e ON a.employee_id = e.id
             ORDER BY a.check_date DESC, e.full_name
         ''', conn)
         
@@ -395,7 +350,6 @@ async def export_report(query, context):
             await query.edit_message_text("❌ Нет данных для отчета")
             return
         
-        # Создаем Excel файл в памяти
         from io import BytesIO
         output = BytesIO()
         
@@ -403,22 +357,14 @@ async def export_report(query, context):
             report_data.to_excel(writer, sheet_name='Посещаемость', index=False)
             
             if not report_data.empty:
-                pivot = pd.pivot_table(report_data, 
-                                     values='check_date', 
-                                     index='full_name', 
-                                     columns='check_date', 
-                                     aggfunc='count', 
-                                     fill_value=0)
+                pivot = pd.pivot_table(report_data, values='check_date', index='full_name', columns='check_date', aggfunc='count', fill_value=0)
                 pivot.to_excel(writer, sheet_name='Сводка')
             
-            stats = report_data.groupby('full_name').agg({
-                'check_date': 'count'
-            }).rename(columns={'check_date': 'Дней отработано'})
+            stats = report_data.groupby('full_name').agg({'check_date': 'count'}).rename(columns={'check_date': 'Дней отработано'})
             stats.to_excel(writer, sheet_name='Статистика')
         
         output.seek(0)
         
-        # Отправляем файл
         await context.bot.send_document(
             chat_id=query.message.chat_id,
             document=output,
@@ -427,6 +373,7 @@ async def export_report(query, context):
         )
         
         await query.edit_message_text("✅ Отчет успешно сгенерирован и отправлен!")
+        logger.info("Сгенерирован отчет Excel")
         
     except Exception as e:
         logger.error(f"Ошибка при создании отчета: {e}")
@@ -449,10 +396,7 @@ async def show_main_menu(query, context):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(
-        "Главное меню:\nВыберите действие:",
-        reply_markup=reply_markup
-    )
+    await query.edit_message_text("Главное меню:\nВыберите действие:", reply_markup=reply_markup)
 
 # Основная функция
 def main():
@@ -460,38 +404,30 @@ def main():
         logger.error("BOT_TOKEN не установлен!")
         return
     
-    # Создаем папку для данных если её нет
-    os.makedirs('/data', exist_ok=True)
-    
     # Инициализация базы данных
     init_db()
     
     # Создание приложения
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # ConversationHandler для добавления сотрудников по имени
-    from telegram.ext import ConversationHandler
+    # ConversationHandler
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(lambda u, c: WAITING_FOR_NAME, pattern='^add_employee_without_telegram$')],
         states={
-            WAITING_FOR_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_employee_name)
-            ],
-            WAITING_FOR_POSITION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_employee_position)
-            ],
+            WAITING_FOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_employee_name)],
+            WAITING_FOR_POSITION: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_employee_position)],
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
     
-    # Обработчики команд
+    # Обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Запуск бота
-    logger.info("Бот запущен...")
+    logger.info("🤖 Бот запущен на Railway!")
     application.run_polling()
 
 if __name__ == '__main__':
