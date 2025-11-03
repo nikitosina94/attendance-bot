@@ -1,0 +1,7 @@
+[deploy]
+buildCommand = "pip install -r requirements.txt"
+startCommand = "python bot.py"
+
+[env]
+BOT_TOKEN.type = "secret"
+ADMIN_ID.type = "string"
