@@ -1,4 +1,4 @@
 pyTelegramBotAPI==4.14.0
 Flask==2.3.3
-psycopg2-binary==2.9.9
+pg8000==1.30.4
 python-dotenv==1.0.0
